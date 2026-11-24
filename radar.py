@@ -12,6 +12,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from topics import build_topics
+from momentum import WINDOWS, attach_periods, compare_date
 
 SOURCE = "https://hongguoduanju.com"
 CHARTS = {
@@ -171,18 +172,24 @@ def build(history):
     week_date = (date.fromisoformat(batch) - timedelta(days=7)).isoformat()
     week = next((day["series"] for day in history if day["date"] == week_date), {})
     ranks = {}
+    dates = {day["date"]: day for day in history}
     types = {}
     for kind, entries in latest["ranks"].items():
         old = {item["id"]: item["rank"] for item in previous["ranks"][kind]} if previous else {}
         seen = {item["id"] for day in history[:-1] for item in day["ranks"][kind]}
         rows = []
+        comparisons = {str(days): {item["id"]: item["rank"] for item in
+                       dates.get(compare_date(batch, days), {}).get("ranks", {}).get(kind, [])}
+                       for days in WINDOWS}
         for entry in entries:
             sid = entry["id"]
             if kind != "hot":
                 types.setdefault(sid, kind)
             delta = old[sid] - entry["rank"] if sid in old else None
             badge = ("back" if sid in seen else "new") if previous and sid not in old else None
-            rows.append(dict(entry, delta=delta, badge=badge))
+            periods = {days: positions[sid] - entry["rank"] for days, positions in comparisons.items()
+                       if sid in positions}
+            rows.append(dict(entry, delta=delta, badge=badge, periods=periods))
         ranks[kind] = {"rank_date": batch, "items": rows}
 
     growth = []
@@ -198,15 +205,17 @@ def build(history):
             current = detail[metric]
             row["d7_" + metric] = current - older if current is not None and older is not None else None
         growth.append(row)
+    windows = attach_periods(growth, history)
+    topic_data = build_topics(history, growth, windows)
     dump(FEED / "snapshot.json", {
         "status": {
             "date": batch, "fetched_at": latest["fetched_at"],
             "rank_dates": dict.fromkeys(CHARTS, batch),
             "tracked": len(set(latest["series"]) | ranks_ids(latest["ranks"])),
         },
-        "ranks": ranks, "growth": {"date": batch, "gap": gap, "items": growth},
+        "ranks": ranks, "growth": {"date": batch, "gap": gap, "items": growth, "windows": windows},
     })
-    dump(FEED / "topics.json", build_topics(history, growth))
+    dump(FEED / "topics.json", topic_data)
     series_history = {}
     for day in history[-36:]:
         for sid, metrics in day["series"].items():

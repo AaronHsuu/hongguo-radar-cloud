@@ -6,6 +6,7 @@ from statistics import mean
 import json
 import re
 
+from momentum import WINDOWS
 from topic_rules import RULES
 
 ARCHIVE = Path(__file__).with_name("data") / "topic-archive.json"
@@ -45,7 +46,7 @@ def rank_entries(batch):
     return [(sid, item["rank"], item["title"]) for sid, item in entries.items()]
 
 
-def aggregate(history, growth, archive):
+def aggregate(history, growth, archive, windows):
     final_day = date.fromisoformat(history[-1]["date"])
     floor = (final_day - timedelta(days=55)).isoformat()
     by_day = {batch["date"]: batch for batch in history if batch["date"] >= floor}
@@ -118,10 +119,9 @@ def aggregate(history, growth, archive):
         "recentDays": sum(day in entries for day in calendar[-7:]),
         "previousDays": sum(day in entries for day in calendar[-14:-7]),
     }
-    series = []
+    series = {days: [] for days in WINDOWS}
     for name, raw in shares.items():
-        result = trend(name, raw, calendar)
-        if result is None or max(result["current"], result["previous"]) < .5 or len(recent_ids[name]) < 5:
+        if len(recent_ids[name]) < 5:
             continue
         top = latest_families[name]
         prev = previous_families[name]
@@ -133,13 +133,27 @@ def aggregate(history, growth, archive):
                 seen.add(families[sid])
                 if len(representatives) >= 3:
                     break
-        result.update({
+        evidence = {
             "families": len(top), "concentration": round(max(top.values()) / sum(top.values()), 3) if top else None,
             "gainConcentration": round(max(increases) / sum(increases), 3) if increases else None,
             "dailyNet": round(heat[name]["net"]), "dailyRising": len(heat[name]["up"]),
             "risingExample": heat[name]["example"], "examples": representatives,
-        })
-        series.append(result)
+        }
+        for days in WINDOWS:
+            result = trend(name, raw, calendar, days)
+            if result is not None and max(result["current"], result["previous"]) >= .5:
+                series[days].append({**result, **evidence})
+    readings = {str(days): reading(series[days]) for days in WINDOWS}
+    for key, window in windows.items():
+        summarize_growth(window, key, growth, assignments, families,
+                         {row["name"]: row for row in series[int(key)]})
+    return {"version": 1, "date": final_day.isoformat(), "coverage": coverage,
+            "forecastStart": (final_day + timedelta(days=1)).isoformat(),
+            "forecastEnd": (final_day + timedelta(days=7)).isoformat(),
+            "dates": calendar[-43:], **readings["7"], "windows": readings}
+
+
+def reading(series):
     rising = sorted((item for item in series if item["delta"] > 0), key=lambda item: -item["delta"])[:10]
     falling = sorted((item for item in series if item["delta"] < 0), key=lambda item: item["delta"])[:10]
     priority, watch = [], []
@@ -152,18 +166,67 @@ def aggregate(history, growth, archive):
     focus = [{"name": name, "priority": True} for name in priority[:3]]
     if len(focus) < 3:
         focus.extend({"name": name, "priority": False} for name in watch[:3 - len(focus)])
-    return {"version": 1, "date": final_day.isoformat(), "coverage": coverage,
-            "forecastStart": (final_day + timedelta(days=1)).isoformat(),
-            "forecastEnd": (final_day + timedelta(days=7)).isoformat(),
-            "dates": calendar[-43:], "up": rising, "down": falling, "focus": focus}
+    return {"up": rising, "down": falling, "focus": focus}
 
 
-def trend(name, raw, dates):
+def summarize_growth(window, key, growth, assignments, families, trends):
+    net = Counter()
+    rising_families = defaultdict(set)
+    recent = defaultdict(Counter)
+    examples = {}
+    period_examples = {}
+    for item in growth:
+        sid = item["id"]
+        amount = item["periods"][key]["hot"]
+        assigned = assignments.get(sid, [])
+        if amount is not None:
+            for name in assigned:
+                net[name] += amount / len(assigned)
+                if amount > 0:
+                    rising_families[name].add(families[sid])
+                    if name not in period_examples or amount > period_examples[name]["delta"]:
+                        period_examples[name] = {"id": sid, "title": item["title"], "delta": amount}
+        if item.get("signal"):
+            signal = {"id": sid, "title": item["title"], **item["signal"]}
+            for name in assigned:
+                recent[name][families[sid]] += signal["recentGain"] / len(assigned)
+                if name not in examples or signal["recentGain"] > examples[name]["recentGain"]:
+                    examples[name] = signal
+    for name, row in trends.items():
+        row["periodNet"] = round(net[name]) if name in net else None
+        row["periodExample"] = period_examples.get(name)
+    candidates = []
+    for name, signals in recent.items():
+        # A single hit should not promote its entire topic.
+        trend = trends.get(name)
+        if not trend or trend["delta"] < .10 or len(signals) < 3:
+            continue
+        total = sum(signals.values())
+        largest = max(signals.values())
+        if largest / total > .60:
+            continue
+        candidates.append({"name": name, "families": len(signals), "risingFamilies": len(rising_families[name]),
+                           "net": trends[name]["periodNet"], "shareDelta": trend["delta"],
+                           "recent": round(total), "example": examples[name]})
+    window["themes"] = sorted(candidates, key=lambda item: -item["recent"])[:3]
+    window["top"] = sorted(window["top"], key=lambda item: -item["gain"])[:3]
+    picks, seen = [], set()
+    for pick in sorted(window["picks"], key=lambda item: (-item["recentGain"], -item["upDays"], -item["gain"])):
+        group = families[pick["id"]]
+        if group not in seen:
+            picks.append(pick)
+            seen.add(group)
+        if len(picks) >= 3:
+            break
+    window["picks"] = picks
+
+
+def trend(name, raw, dates, days):
     smoothed = [
         weekly(raw[i - 6:i + 1]) if i >= 6 and value is not None else None
         for i, value in enumerate(raw)
     ]
-    current, previous = weekly(raw[-7:]), weekly(raw[-14:-7])
+    current, previous = weekly(raw[-7:]), weekly(raw[-days - 7:-days])
     if current is None or previous is None:
         return None
     baseline = [value for value in raw[-35:-7] if value is not None]
@@ -201,6 +264,6 @@ def trend(name, raw, dates):
     }
 
 
-def build_topics(history, growth):
+def build_topics(history, growth, windows):
     archive = json.loads(ARCHIVE.read_text(encoding="utf-8"))
-    return aggregate(history, growth, archive)
+    return aggregate(history, growth, archive, windows)
