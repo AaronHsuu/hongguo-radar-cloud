@@ -7,6 +7,7 @@ import json
 import re
 
 from momentum import WINDOWS
+from tag_radar import build_tag_radar
 from topic_rules import RULES
 
 ARCHIVE = Path(__file__).with_name("data") / "topic-archive.json"
@@ -150,7 +151,8 @@ def aggregate(history, growth, archive, windows):
     return {"version": 1, "date": final_day.isoformat(), "coverage": coverage,
             "forecastStart": (final_day + timedelta(days=1)).isoformat(),
             "forecastEnd": (final_day + timedelta(days=7)).isoformat(),
-            "dates": calendar[-43:], **readings["7"], "windows": readings}
+            "dates": calendar[-43:], **readings["7"], "windows": readings,
+            "tagRadar": build_tag_radar(entries, calendar, tags, families, growth, trend)}
 
 
 def reading(series):
