@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 
 from topics import build_topics
 from momentum import WINDOWS, attach_periods, compare_date
+from ideas import build_ideas
 
 SOURCE = "https://hongguoduanju.com"
 CHARTS = {
@@ -216,6 +217,7 @@ def build(history):
         "ranks": ranks, "growth": {"date": batch, "gap": gap, "items": growth, "windows": windows},
     })
     dump(FEED / "topics.json", topic_data)
+    dump(FEED / "ideas.json", build_ideas(history, growth))
     series_history = {}
     for day in history[-36:]:
         for sid, metrics in day["series"].items():
