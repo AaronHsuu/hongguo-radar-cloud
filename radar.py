@@ -11,6 +11,8 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from topics import build_topics
+
 SOURCE = "https://hongguoduanju.com"
 CHARTS = {
     "hot": "hot-drama", "real": "hot-real-drama",
@@ -204,6 +206,7 @@ def build(history):
         },
         "ranks": ranks, "growth": {"date": batch, "gap": gap, "items": growth},
     })
+    dump(FEED / "topics.json", build_topics(history, growth))
     series_history = {}
     for day in history[-36:]:
         for sid, metrics in day["series"].items():
