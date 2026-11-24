@@ -166,6 +166,8 @@ def build(history):
     previous = history[-2] if len(history) > 1 else None
     batch = latest["date"]
     gap = (date.fromisoformat(batch) - date.fromisoformat(previous["date"])).days if previous else None
+    week_date = (date.fromisoformat(batch) - timedelta(days=7)).isoformat()
+    week = next((day["series"] for day in history if day["date"] == week_date), {})
     ranks = {}
     types = {}
     for kind, entries in latest["ranks"].items():
@@ -189,6 +191,10 @@ def build(history):
             current, older = detail[metric], before.get(metric)
             row["d_" + metric] = round((current - older) / gap) if gap and current is not None and older is not None else None
         row["r_hot"] = round(row["d_hot"] / before["hot"], 4) if row["d_hot"] is not None and before.get("hot") else None
+        for metric in ("hot", "fav"):
+            older = week.get(sid, {}).get(metric)
+            current = detail[metric]
+            row["d7_" + metric] = current - older if current is not None and older is not None else None
         growth.append(row)
     dump(FEED / "snapshot.json", {
         "status": {
