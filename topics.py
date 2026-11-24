@@ -181,8 +181,6 @@ def reading(series):
 
 def summarize_growth(window, key, growth, assignments, families, trends):
     net = Counter()
-    previous = Counter()
-    positive = Counter()
     comparable = Counter()
     changes_up = Counter()
     changes_down = Counter()
@@ -190,8 +188,6 @@ def summarize_growth(window, key, growth, assignments, families, trends):
     recent = defaultdict(Counter)
     examples = {}
     period_examples = {}
-    leaders = {}
-    losers = {}
     bursts = {}
     for item in growth:
         sid = item["id"]
@@ -201,19 +197,13 @@ def summarize_growth(window, key, growth, assignments, families, trends):
             for name in assigned:
                 weight = amount / len(assigned)
                 net[name] += weight
-                previous[name] += (item["hot"] - amount) / len(assigned)
                 comparable[name] += 1
                 changes_up[name] += amount > 0
                 changes_down[name] += amount < 0
                 if amount > 0:
-                    positive[name] += weight
                     rising_families[name].add(families[sid])
-                    if name not in leaders or weight > leaders[name]["weighted"]:
-                        leaders[name] = {"id": sid, "title": item["title"], "gain": amount, "weighted": weight}
                     if name not in period_examples or amount > period_examples[name]["delta"]:
                         period_examples[name] = {"id": sid, "title": item["title"], "delta": amount}
-                if amount < 0 and (name not in losers or weight < losers[name]["weighted"]):
-                    losers[name] = {"id": sid, "title": item["title"], "gain": amount, "weighted": weight}
         if item.get("burst"):
             burst = {"id": sid, "title": item["title"], **item["burst"]}
             for name in assigned:
@@ -232,15 +222,6 @@ def summarize_growth(window, key, growth, assignments, families, trends):
         row["periodDown"] = changes_down[name]
         row["periodExample"] = period_examples.get(name)
         row["burst"] = bursts.get(name)
-    net_rows = []
-    for name, total in net.items():
-        leader = leaders.get(name)
-        net_rows.append({"name": name, "net": round(total), "rate": total / previous[name] if previous[name] else None,
-                         "count": comparable[name], "up": changes_up[name], "down": changes_down[name],
-                         "leader": leader, "loser": losers.get(name), "burst": bursts.get(name),
-                         "contribution": leader["weighted"] / positive[name] if leader and positive[name] else None})
-    window["netUp"] = sorted((row for row in net_rows if row["net"] > 0), key=lambda row: (-row["net"], row["name"]))[:10]
-    window["netDown"] = sorted((row for row in net_rows if row["net"] < 0), key=lambda row: (row["net"], row["name"]))[:10]
     candidates = []
     for name in sorted(recent.keys() | bursts.keys()):
         signals = recent[name]
