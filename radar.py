@@ -68,6 +68,16 @@ class PublicPages:
         raise RuntimeError(f"红果官网页面读取失败 {path}") from error
 
     def chart(self, slug):
+        for delay in (0, 3, 8):
+            if delay:
+                time.sleep(delay)
+            try:
+                return self.read_chart(slug)
+            except ValueError as exc:
+                error = exc
+        raise error
+
+    def read_chart(self, slug):
         entries = []
         for page in range(1, 6):
             path = f"/rank/{slug}" + (f"?page={page}" if page > 1 else "")
