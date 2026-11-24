@@ -127,36 +127,29 @@ def collect(today, history):
     with ThreadPoolExecutor(max_workers=4) as pool:
         ranks = dict(zip(CHARTS, pool.map(web.chart, CHARTS.values())))
         print("四个官网榜单各获取 100 条", flush=True)
-        probe = [item["id"] for item in ranks["hot"][:5]]
-        details = dict(zip(probe, pool.map(web.detail, probe)))
         previous = history[-1] if history else None
-        if previous:
-            before = previous["series"]
-            compared = [
-                before[sid]["hot"] == details[sid]["hot"]
-                for sid in probe if before.get(sid) and details[sid]
-                and before[sid]["hot"] is not None and details[sid]["hot"] is not None
-            ]
-            same_positions = all(
-                [item["id"] for item in ranks[key]] == [item["id"] for item in previous["ranks"][key]]
-                for key in CHARTS
-            )
-            if all(compared) and (len(compared) >= 3 or same_positions):
-                print("官网数据仍与上一日相同，继续使用已发布批次")
-                return None
-
         ids = ranks_ids(ranks)
         since = (today - timedelta(days=14)).isoformat()
         for older in history:
             if older["date"] >= since:
                 ids.update(ranks_ids(older["ranks"]))
-        remaining = sorted(ids - set(details))
-        details.update(zip(remaining, pool.map(web.detail, remaining)))
+        if previous and previous["date"] == today.isoformat():
+            ids.update(previous["series"])
+        ordered = sorted(ids)
+        details = dict(zip(ordered, pool.map(web.detail, ordered)))
 
     series = {sid: detail for sid, detail in details.items() if detail is not None}
     if len(series) < len(ids) * 0.9:
         raise RuntimeError(f"详情读取成功率过低 {len(series)}/{len(ids)}，保留上一批")
     print(f"已核对详情 {len(series)}/{len(ids)} 部", flush=True)
+    if previous:
+        before = previous["series"]
+        if ranks == previous["ranks"] and all(before.get(sid) == detail for sid, detail in series.items()):
+            print("官网榜单和剧集数据未变，继续使用已发布批次")
+            return None
+        if previous["date"] == today.isoformat():
+            # An intermittent failure must not erase a detail already captured today.
+            series.update((sid, before[sid]) for sid in ids - series.keys() if sid in before)
     return {
         "date": today.isoformat(), "fetched_at": datetime.now(timezone.utc).isoformat(),
         "ranks": ranks, "series": series,
@@ -236,8 +229,8 @@ def main():
     now = datetime.now(BEIJING)
     today = now.date()
     today_exists = bool(history and history[-1]["date"] == today.isoformat())
-    if not options.build_only and now.hour >= 9 and (options.refresh_today or not today_exists):
-        batch = collect(today, [day for day in history if day["date"] < today.isoformat()])
+    if not options.build_only and (options.refresh_today or not today_exists):
+        batch = collect(today, history)
         if batch:
             dump(SNAPSHOTS / f"{today}.json", batch)
             history = load_snapshots()
