@@ -7,8 +7,9 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
+from http.client import HTTPException
 from pathlib import Path
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from topics import build_topics
@@ -62,7 +63,7 @@ class PublicPages:
                 elif exc.code < 500:
                     raise
                 error = exc
-            except (URLError, TimeoutError, ValueError, KeyError) as exc:
+            except (OSError, HTTPException, ValueError, KeyError) as exc:
                 error = exc
         raise RuntimeError(f"红果官网页面读取失败 {path}") from error
 
