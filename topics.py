@@ -31,9 +31,9 @@ def family(title):
     return re.sub(suffix, "", text) or title
 
 
-def weekly(values):
+def available_mean(values, minimum):
     clean = [value for value in values if value is not None]
-    return mean(clean) if len(clean) >= 5 else None
+    return mean(clean) if len(clean) >= minimum else None
 
 
 def rank_entries(batch):
@@ -76,8 +76,10 @@ def aggregate(history, growth, archive, windows):
     shares = {name: [] for name in names}
     recent_ids = {name: set() for name in names}
     latest_titles = {name: Counter() for name in names}
+    short_titles = {name: Counter() for name in names}
     previous_families = {name: Counter() for name in names}
     latest_families = {name: Counter() for name in names}
+    short_families = {name: Counter() for name in names}
     heat = {name: {"up": set(), "net": 0, "example": None} for name in names}
     ranked_ids = set()
     for i, day in enumerate(calendar):
@@ -95,6 +97,9 @@ def aggregate(history, growth, archive, windows):
                     if i >= len(calendar) - 7:
                         latest_families[topic][families[sid]] += weight
                         latest_titles[topic][sid] += weight
+                        if i >= len(calendar) - 3:
+                            short_families[topic][families[sid]] += weight
+                            short_titles[topic][sid] += weight
                     else:
                         previous_families[topic][families[sid]] += weight
         for name in names:
@@ -127,27 +132,31 @@ def aggregate(history, growth, archive, windows):
         top = latest_families[name]
         prev = previous_families[name]
         increases = [value - prev[f] for f, value in top.items() if value > prev[f]]
-        representatives, seen = [], set()
-        for sid, _ in latest_titles[name].most_common():
-            if families[sid] not in seen:
-                representatives.append({"id": sid, "title": titles[sid]})
-                seen.add(families[sid])
-                if len(representatives) >= 3:
-                    break
         evidence = {
             "families": len(top), "concentration": round(max(top.values()) / sum(top.values()), 3) if top else None,
             "gainConcentration": round(max(increases) / sum(increases), 3) if increases else None,
             "dailyNet": round(heat[name]["net"]), "dailyRising": len(heat[name]["up"]),
-            "risingExample": heat[name]["example"], "examples": representatives,
+            "risingExample": heat[name]["example"],
         }
         for days in WINDOWS:
             result = trend(name, raw, calendar, days)
             if result is not None and max(result["current"], result["previous"]) >= .5:
-                series[days].append({**result, **evidence})
-    readings = {str(days): reading(series[days]) for days in WINDOWS}
+                recent = short_titles[name] if days == 3 else latest_titles[name]
+                representatives, seen = [], set()
+                for sid, _ in recent.most_common():
+                    if families[sid] not in seen:
+                        representatives.append({"id": sid, "title": titles[sid]})
+                        seen.add(families[sid])
+                        if len(representatives) >= 3:
+                            break
+                entry = {**result, **evidence, "examples": representatives}
+                if days == 3:
+                    entry["families"] = len(short_families[name])
+                series[days].append(entry)
     for key, window in windows.items():
         summarize_growth(window, key, growth, assignments, families,
                          {row["name"]: row for row in series[int(key)]})
+    readings = {str(days): reading(series[days]) for days in WINDOWS}
     return {"version": 1, "date": final_day.isoformat(), "coverage": coverage,
             "forecastStart": (final_day + timedelta(days=1)).isoformat(),
             "forecastEnd": (final_day + timedelta(days=7)).isoformat(),
@@ -160,10 +169,10 @@ def reading(series):
     falling = sorted((item for item in series if item["delta"] < 0), key=lambda item: item["delta"])[:10]
     priority, watch = [], []
     for topic in rising:
-        if (topic["hotDays"] >= 3 and topic["families"] >= 5 and topic["accelerating"]
+        if ((topic["periodNet"] or 0) > 0 and topic["families"] >= 5 and topic["accelerating"]
                 and topic["dailyRising"] >= 2 and (topic["gainConcentration"] or 0) < .4):
             priority.append(topic["name"])
-        elif topic["hotDays"] and topic["families"] >= 5:
+        elif topic["families"] >= 5:
             watch.append(topic["name"])
     focus = [{"name": name, "priority": True} for name in priority[:3]]
     if len(focus) < 3:
@@ -173,6 +182,9 @@ def reading(series):
 
 def summarize_growth(window, key, growth, assignments, families, trends):
     net = Counter()
+    comparable = Counter()
+    changes_up = Counter()
+    changes_down = Counter()
     rising_families = defaultdict(set)
     recent = defaultdict(Counter)
     examples = {}
@@ -184,6 +196,9 @@ def summarize_growth(window, key, growth, assignments, families, trends):
         if amount is not None:
             for name in assigned:
                 net[name] += amount / len(assigned)
+                comparable[name] += 1
+                changes_up[name] += amount > 0
+                changes_down[name] += amount < 0
                 if amount > 0:
                     rising_families[name].add(families[sid])
                     if name not in period_examples or amount > period_examples[name]["delta"]:
@@ -196,6 +211,9 @@ def summarize_growth(window, key, growth, assignments, families, trends):
                     examples[name] = signal
     for name, row in trends.items():
         row["periodNet"] = round(net[name]) if name in net else None
+        row["periodComparable"] = comparable[name]
+        row["periodUp"] = changes_up[name]
+        row["periodDown"] = changes_down[name]
         row["periodExample"] = period_examples.get(name)
     candidates = []
     for name, signals in recent.items():
@@ -224,14 +242,17 @@ def summarize_growth(window, key, growth, assignments, families, trends):
 
 
 def trend(name, raw, dates, days):
+    width = 3 if days == 3 else 7
+    minimum = 2 if days == 3 else 5
     smoothed = [
-        weekly(raw[i - 6:i + 1]) if i >= 6 and value is not None else None
+        available_mean(raw[i - width + 1:i + 1], minimum) if i + 1 >= width and value is not None else None
         for i, value in enumerate(raw)
     ]
-    current, previous = weekly(raw[-7:]), weekly(raw[-days - 7:-days])
+    current = available_mean(raw[-width:], minimum)
+    previous = available_mean(raw[-days - width:-days], minimum)
     if current is None or previous is None:
         return None
-    baseline = [value for value in raw[-35:-7] if value is not None]
+    baseline = [value for value in raw[-28 - width:-width] if value is not None]
     hot = 0
     if len(baseline) >= 14:
         average = mean(baseline)

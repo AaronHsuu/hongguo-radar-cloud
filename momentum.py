@@ -1,7 +1,7 @@
 """Compare exact dates and identify series with sustained recent gains."""
 from datetime import date, timedelta
 
-WINDOWS = (7, 30)
+WINDOWS = (3, 7, 30)
 
 
 def compare_date(day, days):
