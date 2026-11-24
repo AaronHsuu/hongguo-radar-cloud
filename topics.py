@@ -6,7 +6,7 @@ from statistics import mean
 import json
 import re
 
-from momentum import WINDOWS
+from momentum import BURST_FLOORS, WINDOWS
 from tag_radar import build_tag_radar
 from topic_rules import RULES
 
@@ -169,8 +169,7 @@ def reading(series):
     falling = sorted((item for item in series if item["delta"] < 0), key=lambda item: item["delta"])[:10]
     priority, watch = [], []
     for topic in rising:
-        if ((topic["periodNet"] or 0) > 0 and topic["families"] >= 5 and topic["accelerating"]
-                and topic["dailyRising"] >= 2 and (topic["gainConcentration"] or 0) < .4):
+        if ((topic["periodNet"] or 0) > 0 and topic["accelerating"]) or topic.get("burst"):
             priority.append(topic["name"])
         elif topic["families"] >= 5:
             watch.append(topic["name"])
@@ -182,6 +181,8 @@ def reading(series):
 
 def summarize_growth(window, key, growth, assignments, families, trends):
     net = Counter()
+    previous = Counter()
+    positive = Counter()
     comparable = Counter()
     changes_up = Counter()
     changes_down = Counter()
@@ -189,20 +190,35 @@ def summarize_growth(window, key, growth, assignments, families, trends):
     recent = defaultdict(Counter)
     examples = {}
     period_examples = {}
+    leaders = {}
+    losers = {}
+    bursts = {}
     for item in growth:
         sid = item["id"]
         amount = item["periods"][key]["hot"]
         assigned = assignments.get(sid, [])
         if amount is not None:
             for name in assigned:
-                net[name] += amount / len(assigned)
+                weight = amount / len(assigned)
+                net[name] += weight
+                previous[name] += (item["hot"] - amount) / len(assigned)
                 comparable[name] += 1
                 changes_up[name] += amount > 0
                 changes_down[name] += amount < 0
                 if amount > 0:
+                    positive[name] += weight
                     rising_families[name].add(families[sid])
+                    if name not in leaders or weight > leaders[name]["weighted"]:
+                        leaders[name] = {"id": sid, "title": item["title"], "gain": amount, "weighted": weight}
                     if name not in period_examples or amount > period_examples[name]["delta"]:
                         period_examples[name] = {"id": sid, "title": item["title"], "delta": amount}
+                if amount < 0 and (name not in losers or weight < losers[name]["weighted"]):
+                    losers[name] = {"id": sid, "title": item["title"], "gain": amount, "weighted": weight}
+        if item.get("burst"):
+            burst = {"id": sid, "title": item["title"], **item["burst"]}
+            for name in assigned:
+                if name not in bursts or burst["gain"] > bursts[name]["gain"]:
+                    bursts[name] = burst
         if item.get("signal"):
             signal = {"id": sid, "title": item["title"], **item["signal"]}
             for name in assigned:
@@ -215,23 +231,37 @@ def summarize_growth(window, key, growth, assignments, families, trends):
         row["periodUp"] = changes_up[name]
         row["periodDown"] = changes_down[name]
         row["periodExample"] = period_examples.get(name)
+        row["burst"] = bursts.get(name)
+    net_rows = []
+    for name, total in net.items():
+        leader = leaders.get(name)
+        net_rows.append({"name": name, "net": round(total), "rate": total / previous[name] if previous[name] else None,
+                         "count": comparable[name], "up": changes_up[name], "down": changes_down[name],
+                         "leader": leader, "loser": losers.get(name), "burst": bursts.get(name),
+                         "contribution": leader["weighted"] / positive[name] if leader and positive[name] else None})
+    window["netUp"] = sorted((row for row in net_rows if row["net"] > 0), key=lambda row: (-row["net"], row["name"]))[:10]
+    window["netDown"] = sorted((row for row in net_rows if row["net"] < 0), key=lambda row: (row["net"], row["name"]))[:10]
     candidates = []
-    for name, signals in recent.items():
-        # A single hit should not promote its entire topic.
+    for name in sorted(recent.keys() | bursts.keys()):
+        signals = recent[name]
+        burst = bursts.get(name)
         trend = trends.get(name)
-        if not trend or trend["delta"] < .10 or len(signals) < 3:
+        if not burst and (not trend or trend["delta"] < .10 or not signals):
             continue
         total = sum(signals.values())
-        largest = max(signals.values())
-        if largest / total > .60:
-            continue
         candidates.append({"name": name, "families": len(signals), "risingFamilies": len(rising_families[name]),
-                           "net": trends[name]["periodNet"], "shareDelta": trend["delta"],
-                           "recent": round(total), "example": examples[name]})
-    window["themes"] = sorted(candidates, key=lambda item: -item["recent"])[:3]
+                           "net": round(net[name]) if name in net else None, "shareDelta": trend["delta"] if trend else None,
+                           "recent": round(total), "example": examples.get(name), "burst": burst})
+    window["themes"] = sorted(candidates, key=lambda item: (
+        not item["burst"], -(item["burst"]["gain"] if item["burst"] else item["recent"]), -item["recent"]))[:3]
     window["top"] = sorted(window["top"], key=lambda item: -item["gain"])[:3]
     picks, seen = [], set()
-    for pick in sorted(window["picks"], key=lambda item: (-item["recentGain"], -item["upDays"], -item["gain"])):
+    def priority(pick):
+        burst = pick.get("burst")
+        if burst:
+            return (0, -burst["gain"] / BURST_FLOORS[burst["days"]], -burst["gain"])
+        return (1, -pick["recentGain"], -pick["upDays"], -pick["gain"])
+    for pick in sorted(window["picks"], key=priority):
         group = families[pick["id"]]
         if group not in seen:
             picks.append(pick)
@@ -239,6 +269,22 @@ def summarize_growth(window, key, growth, assignments, families, trends):
         if len(picks) >= 3:
             break
     window["picks"] = picks
+    # Keep the earliest detectable burst separate from period-end comparisons.
+    ranked = sorted((item for item in growth if item.get("burst")),
+                    key=lambda item: (-item["burst"]["gain"] / BURST_FLOORS[item["burst"]["days"]],
+                                      -item["burst"]["gain"], item["id"]))
+    lead_shows, seen = [], set()
+    for item in ranked:
+        sid = item["id"]
+        if families[sid] in seen or not assignments[sid]:
+            continue
+        lead_shows.append({"id": sid, "title": item["title"], **item["burst"], "periodGain": item["periods"][key]["hot"],
+                           "topics": [{"name": name, "net": round(net[name]) if name in net else None}
+                                      for name in assignments[sid]]})
+        seen.add(families[sid])
+        if len(lead_shows) == 5:
+            break
+    window["bursts"] = lead_shows
 
 
 def trend(name, raw, dates, days):

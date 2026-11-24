@@ -31,40 +31,36 @@ def build_tag_radar(entries, calendar, tags, families, growth, trend):
     for item in growth:
         for tag in item_tags.get(item["id"], ()):
             by_tag[tag].append(item)
+    burst_tags = {}
+    for tag, linked in by_tag.items():
+        hits = [item for item in linked if item.get("burst")]
+        if hits:
+            lead = max(hits, key=lambda item: (item["burst"]["gain"], item["id"]))
+            burst_tags[tag] = {"id": lead["id"], "title": lead["title"], **lead["burst"]}
 
     windows = {}
     for window in WINDOWS:
         groups = {"up": [], "down": []}
-        for tag, support in recent_families.items():
-            if len(support) < 3:
+        for tag in sorted(recent_families.keys() | burst_tags.keys()):
+            support = recent_families[tag]
+            burst = burst_tags.get(tag)
+            if len(support) < 3 and not burst:
                 continue
             raw = [scores.get(tag, 0) if scores is not None else None for scores in daily]
             recent = [value for value in raw[-3:] if value is not None]
             before = [value for value in raw[-6:-3] if value is not None]
             row = trend(tag, raw, calendar, window)
-            if not row or len(recent) < 2 or len(before) < 2 or max(row["current"], row["previous"]) < .035:
+            if not row or len(recent) < 2 or len(before) < 2 or (max(row["current"], row["previous"]) < .035 and not burst):
                 continue
             change = mean(recent) - mean(before)
-            if abs(change) < .005:
-                continue
-            direction = "up" if change > 0 else "down"
-            sign = 1 if direction == "up" else -1
-            aligned = sign * row["delta"] > 0
-            linked = by_tag.get(tag, [])
-            moves = {families[item["id"]] for item in linked
-                     if sign * (item["periods"][str(window)]["hot"] or 0) > 0}
-            signals = {families[item["id"]] for item in linked if item.get("signal")}
-            # Short-window movement stays dominant even in the 30-day view.
-            period_bonus = min(abs(change) * 1.5, max(0, sign * row["delta"]) * .40)
-            breadth = len(signals) if direction == "up" else len(moves)
-            score = (abs(change) + period_bonus) * (1 + .14 * log1p(len(support)) + .08 * log1p(breadth))
-            if not aligned:
-                score *= .65
-            groups[direction].append({
-                **row, "shortDelta": round(change, 4), "aligned": aligned, "families": len(support),
-                "movingFamilies": len(moves), "recentRisers": len(signals), "score": round(score, 6),
-                "shows": related(linked, latest[tag], families, window, sign),
-            })
+            signals = []
+            if change >= .005 or burst:
+                signals.append("up")
+            if change <= -.005 and len(support) >= 3:
+                signals.append("down")
+            for direction in signals:
+                groups[direction].append(tag_signal(row, change, support, by_tag[tag], latest[tag],
+                                                    families, window, direction, burst))
         windows[str(window)] = {
             direction: sorted(items, key=lambda row: (-row["score"], row["name"]))[:20]
             for direction, items in groups.items()
@@ -72,10 +68,32 @@ def build_tag_radar(entries, calendar, tags, families, growth, trend):
     return windows
 
 
-def related(items, weights, families, days, sign):
+def tag_signal(row, change, support, linked, weights, families, window, direction, burst):
+    sign = 1 if direction == "up" else -1
+    aligned = sign * row["delta"] > 0
+    moves = {families[item["id"]] for item in linked
+             if sign * (item["periods"][str(window)]["hot"] or 0) > 0}
+    signals = {families[item["id"]] for item in linked if item.get("signal")}
+    # Short-window movement stays dominant even in the 30-day view.
+    period_bonus = min(abs(change) * 1.5, max(0, sign * row["delta"]) * .40)
+    breadth = len(signals) if direction == "up" else len(moves)
+    score = (max(0, sign * change) + period_bonus) * (1 + .14 * log1p(len(support)) + .08 * log1p(breadth))
+    if not aligned:
+        score *= .65
+    if direction == "up" and burst:
+        score += min(.45, burst["gain"] / 12_000_000)
+    shows = related(linked, weights, families, window, sign, burst["id"] if direction == "up" and burst else None)
+    return {
+        **row, "shortDelta": round(change, 4), "aligned": aligned, "families": len(support),
+        "movingFamilies": len(moves), "recentRisers": len(signals), "score": round(score, 6),
+        "shows": shows, "burst": burst if direction == "up" else None,
+    }
+
+
+def related(items, weights, families, days, sign, lead_id):
     def ordering(row):
         delta = row["periods"][str(days)]["hot"]
-        return (sign * (delta or 0) > 0, weights[row["id"]] > 0, sign * (delta or 0),
+        return (row["id"] == lead_id, sign * (delta or 0) > 0, weights[row["id"]] > 0, sign * (delta or 0),
                 weights[row["id"]], row["hot"] or 0, row["id"])
 
     shows = []
