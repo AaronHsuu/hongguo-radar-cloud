@@ -184,6 +184,10 @@ def summarize_growth(window, key, growth, assignments, families, trends):
     comparable = Counter()
     changes_up = Counter()
     changes_down = Counter()
+    favorite_comparable = Counter()
+    favorite_rising = Counter()
+    favorite_gain = Counter()
+    favorite_leaders = {}
     rising_families = defaultdict(set)
     recent = defaultdict(Counter)
     examples = {}
@@ -191,8 +195,18 @@ def summarize_growth(window, key, growth, assignments, families, trends):
     bursts = {}
     for item in growth:
         sid = item["id"]
-        amount = item["periods"][key]["hot"]
+        period = item["periods"][key]
+        amount = period["hot"]
         assigned = assignments.get(sid, [])
+        if period["fav"] is not None:
+            for name in assigned:
+                favorite_comparable[name] += 1
+                if period["fav"] > 0:
+                    favorite_rising[name] += 1
+                    favorite_gain[name] += period["fav"] / len(assigned)
+                    leader = favorite_leaders.get(name)
+                    if not leader or period["fav"] > leader["gain"]:
+                        favorite_leaders[name] = {"id": sid, "title": item["title"], "gain": period["fav"]}
         if amount is not None:
             for name in assigned:
                 weight = amount / len(assigned)
@@ -222,6 +236,11 @@ def summarize_growth(window, key, growth, assignments, families, trends):
         row["periodDown"] = changes_down[name]
         row["periodExample"] = period_examples.get(name)
         row["burst"] = bursts.get(name)
+        row["favorites"] = {
+            "gain": round(favorite_gain[name]) if favorite_comparable[name] else None,
+            "comparable": favorite_comparable[name], "rising": favorite_rising[name],
+            "leader": favorite_leaders.get(name),
+        }
     candidates = []
     for name in sorted(recent.keys() | bursts.keys()):
         signals = recent[name]
@@ -232,6 +251,7 @@ def summarize_growth(window, key, growth, assignments, families, trends):
         total = sum(signals.values())
         candidates.append({"name": name, "families": len(signals), "risingFamilies": len(rising_families[name]),
                            "net": round(net[name]) if name in net else None, "shareDelta": trend["delta"] if trend else None,
+                           "favoriteGain": round(favorite_gain[name]) if favorite_comparable[name] else None,
                            "recent": round(total), "example": examples.get(name), "burst": burst})
     window["themes"] = sorted(candidates, key=lambda item: (
         not item["burst"], -(item["burst"]["gain"] if item["burst"] else item["recent"]), -item["recent"]))[:3]
