@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from statistics import mean
 
 
-GENERIC = {"剧情", "爱情", "现代", "古代", "反转", "成长", "短剧"}
+GENERIC = {"剧情", "爱情", "现代", "古代", "反转", "成长", "短剧", "圆满结局"}
 
 
 def build_forecast(entries, ranked, days):
@@ -60,6 +60,8 @@ def build_forecast(entries, ranked, days):
             state = "正在升温"
         elif delta <= -max(.12, share * .15):
             state = "正在降温"
+        elif share >= 2 and active >= 3:
+            state = "持续高热"
         else:
             state = "走势平稳"
 
