@@ -103,6 +103,7 @@ class PublicPages:
             return {
                 "title": actual["series_name"],
                 "tags": actual.get("tags") or [],
+                "intro": str(actual.get("series_intro") or "").strip()[:300],
                 "hot": integer((social.get("hot_score_data") or {}).get("score")),
                 "fav": integer(social.get("series_favorite_count")),
                 "like": integer(social.get("series_like_count")),

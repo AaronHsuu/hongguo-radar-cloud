@@ -4,6 +4,7 @@ from datetime import date, timedelta
 import json
 
 from topics import ARCHIVE, family
+from idea_forecast import build_forecast
 
 BOARDS = ("hot", "real", "ai", "comic")
 
@@ -16,6 +17,7 @@ def build_ideas(history, growth):
     short_days = {(date.fromisoformat(latest) - timedelta(days=i)).isoformat() for i in range(3)}
     recent_days = {(date.fromisoformat(latest) - timedelta(days=i)).isoformat() for i in range(6)}
     recent = defaultdict(dict)
+    ranked = defaultdict(dict)
 
     def remember(sid, title):
         return entries.setdefault(sid, {"id": sid, "title": title, "tags": set()})
@@ -24,6 +26,7 @@ def build_ideas(history, growth):
         best_board = min(positions, key=lambda board: (positions[board], BOARDS.index(board)))
         position = positions[best_board]
         row = entries[sid]
+        ranked[sid][day] = position
         if "best" not in row or position <= row["best"][1]:
             row["best"] = [best_board, position, day]
         if day in recent_days:
@@ -45,6 +48,8 @@ def build_ideas(history, growth):
             row = remember(sid, metrics["title"])
             row["title"] = metrics["title"]
             row["tags"].update(metrics.get("tags") or [])
+            if metrics.get("intro"):
+                row["intro"] = metrics["intro"]
             row["sample"] = [day, metrics["hot"], metrics["fav"]]
         positions = defaultdict(dict)
         for board, shows in batch["ranks"].items():
@@ -70,5 +75,7 @@ def build_ideas(history, growth):
             }
             if source.get("burst"):
                 row["burst"] = source["burst"]
-    return {"version": 1, "date": latest, "start": min(collected), "days": len(collected),
+    days = sorted(collected)[-90:]
+    research = build_forecast(entries, ranked, days)
+    return {"version": 1, "date": latest, "start": min(collected), "days": len(collected), "research": research,
             "series": list(entries.values())}
