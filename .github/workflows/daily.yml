@@ -4,9 +4,9 @@ on:
   schedule:
     - cron: '0,30 10,11,18-23 * * *'
       timezone: Asia/Shanghai
-    - cron: '0 0,2,4,6,8 * * *'
+    - cron: '0 0,8,14,16 * * *'
       timezone: Asia/Shanghai
-    - cron: '30 13,15,17 * * *'
+    - cron: '30 17 * * *'
       timezone: Asia/Shanghai
   workflow_dispatch:
     inputs:
